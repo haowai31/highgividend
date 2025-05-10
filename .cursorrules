@@ -1,0 +1,565 @@
+# Project: A股辅助决策工具 (.cursorrules)
+
+## 0. 项目优先级与开发工具
+### 0.1 项目优先级（从高到低）
+1. **核心数据模块** (`data_manager.py`)
+   - 数据库表结构实现
+   - 基础数据获取和存储（日K、财务、分红）
+   - 数据更新机制
+   - 日志记录系统
+
+2. **基础策略实现** (`strategy_engine.py`)
+   - 实现 Strategy 1A（日线低吸 - 布林下轨走平 + 股息率）
+   - 实现 Strategy 1B（周线低吸）
+   - 实现 Strategy 2A（日线趋势突破）
+   - 安全分计算
+
+3. **命令行接口** (`main.py`)
+   - 基础命令实现（init-config, update-data, scan）
+   - 股票池管理命令
+   - 结果输出格式化
+
+4. **数据导出接口**
+   - 设计标准化的数据输出格式
+   - 为未来小程序开发预留接口
+
+5. **测试用例** (`tests/`)
+   - 核心功能单元测试
+   - 数据获取和存储测试
+   - 策略逻辑测试
+
+6. **文档和示例**
+   - 使用说明文档
+   - 配置文件示例
+   - 策略说明文档
+
+### 0.2 开发工具
+- **Python版本管理**: 使用 `uv` 工具进行Python版本管理
+- **依赖包管理**: 使用 `uv` 工具进行依赖包管理
+- **开发环境**: 使用 `uv venv` 创建虚拟环境
+- **包安装**: 使用 `uv pip install -r requirements.txt` 安装依赖
+- **虚拟环境激活**: 在执行任何命令前，必须先激活虚拟环境：
+  ```bash
+  source .venv/bin/activate  # 在项目根目录下执行
+  ```
+- **命令执行规则**: 所有 Python 相关命令（如运行测试、安装包等）必须在激活虚拟环境后执行
+
+## 1. 项目概述与目标
+- **目标:** 开发一个基于Python的A股辅助决策工具，实现策略选股、历史回溯、数据管理和结果输出。
+- **核心用户:** 个人投资者。
+- **主要价值:** 自动化初步筛选，辅助投资决策。
+
+## 2. 技术选型 (Key Technologies)
+- **编程语言:** Python 3.9+
+- **主要库:**
+    - **数据获取: akshare**
+    - 数据库: SQLite 3
+    - 命令行接口: argparse (或 click)
+    - 数据处理: pandas, numpy
+    - 日志: logging (Python内置)
+    - 测试: unittest (或 pytest)
+- **配置文件格式:** JSON (`config.json`, `stock_pool.json`)
+- **代码风格:** 遵循 PEP 8，注重模块化和可读性。
+- **版本控制:** Git
+
+## 3. 核心数据结构 (Data Structures)
+
+### 3.1 SQLite 数据库 (`stock_data.db`)
+- **表: `daily_kline`** (日K线数据)
+  - `stock_code TEXT NOT NULL` (股票代码, e.g., 'SH600000', 'SZ000001')
+  - `date TEXT NOT NULL` (日期, 格式: 'YYYY-MM-DD')
+  - `open REAL` (开盘价 - 前复权)
+  - `high REAL` (最高价 - 前复权)
+  - `low REAL` (最低价 - 前复权)
+  - `close REAL` (收盘价 - 前复权)
+  - `volume INTEGER` (成交量)
+  - `amount REAL` (成交额)
+  - `adj_factor REAL` (复权因子, 可选, 用于验证或从原始数据计算复权价)
+  - `PRIMARY KEY (stock_code, date)`
+- **表: `weekly_kline`** (周K线数据 - 由日K合成)
+  - `stock_code TEXT NOT NULL`
+  - `date TEXT NOT NULL` (每周最后一个交易日日期, 'YYYY-MM-DD')
+  - `open REAL`
+  - `high REAL`
+  - `low REAL`
+  - `close REAL`
+  - `volume INTEGER`
+  - `amount REAL`
+  - `PRIMARY KEY (stock_code, date)`
+- **表: `monthly_kline`** (月K线数据 - 由日K合成)
+  - `stock_code TEXT NOT NULL`
+  - `date TEXT NOT NULL` (每月最后一个交易日日期, 'YYYY-MM-DD')
+  - `open REAL`
+  - `high REAL`
+  - `low REAL`
+  - `close REAL`
+  - `volume INTEGER`
+  - `amount REAL`
+  - `PRIMARY KEY (stock_code, date)`
+- **表: `dividend_data`** (分红数据 - 用于计算股息率)
+  - `stock_code TEXT NOT NULL`
+  - `report_date TEXT` (公告日期, 'YYYY-MM-DD')
+  - `ex_dividend_date TEXT NOT NULL` (除权除息日, 'YYYY-MM-DD')
+  - `dividend_per_share_pre_tax REAL` (每股股利-税前)
+  - `dividend_yield REAL` (动态股息率, 计算后存储, 可选)
+  - `PRIMARY KEY (stock_code, ex_dividend_date)`
+- **表: `financial_summary`** (财务摘要数据)
+  - `stock_code TEXT NOT NULL`
+  - `date TEXT NOT NULL` (报告期/公告日, 'YYYY-MM-DD')
+  - `pe_ttm REAL` (市盈率TTM)
+  - `pb_mrq REAL` (市净率MRQ)
+  - `market_cap REAL` (总市值)
+  - `circulating_market_cap REAL` (流通市值)
+  - `PRIMARY KEY (stock_code, date)`
+- **表: `historical_signals`** (历史策略信号)
+  - `id INTEGER PRIMARY KEY AUTOINCREMENT`
+  - `stock_code TEXT NOT NULL`
+  - `date TEXT NOT NULL` (信号产生日期, 'YYYY-MM-DD')
+  - `strategy_name TEXT NOT NULL` (产生信号的策略名称)
+  - `signal_type TEXT NOT NULL` (e.g., 'buy', 'potential_buy', 'sell')
+  - `price REAL` (信号日收盘价)
+  - `description TEXT` (信号描述, e.g., "布林下轨走平, 动态股息率3.5%")
+- **表: `data_update_log`** (数据更新日志)
+  - `table_name TEXT NOT NULL` (被更新的表名, e.g., 'daily_kline')
+  - `stock_code TEXT NOT NULL` (具体股票代码, 或 'ALL' 代表全部)
+  - `last_update_date TEXT NOT NULL` (最后成功更新的日期, 'YYYY-MM-DD')
+  - `last_successful_fetch_date_for_stock TEXT` (该股票在该表数据的最新日期, 'YYYY-MM-DD')
+  - `PRIMARY KEY (table_name, stock_code)`
+
+### 3.2 JSON 配置文件
+- **`config.json` 结构:**
+  ```json
+  {
+    "data_source": {
+      "akshare_max_retries": 3,
+      "akshare_retry_delay_seconds": 10,
+      "proxies": null // 例如: {"http": "http://user:pass@host:port", "https": "..."}
+    },
+    "database_path": "stock_data.db",
+    "log_level": "INFO", // DEBUG, INFO, WARNING, ERROR, CRITICAL
+    "log_file_path": "app.log",
+    "scan_output_dir": "scan_results",
+    "strategies": {
+      "strategy_1a_daily_bollinger_dividend": {
+        "enabled": true,
+        "bollinger_period": 20,
+        "bollinger_std_dev": 2.0,
+        "bollinger_flat_check_days": 60,
+        "bollinger_flat_threshold_percentage": 5.0, // 下轨波动幅度小于5%
+        "min_dynamic_dividend_yield": 3.0 // 最低动态股息率3%
+      },
+      "strategy_1b_weekly_bollinger_dividend": {
+        "enabled": true,
+        "bollinger_period": 20,
+        "bollinger_std_dev": 2.0,
+        "bollinger_flat_check_days": 12, // 周线对应约60个交易日
+        "bollinger_flat_threshold_percentage": 7.0,
+        "min_dynamic_dividend_yield": 3.0
+      },
+      "strategy_2a_daily_macd_bollinger_breakthrough": {
+        "enabled": true,
+        "macd_fast_period": 12,
+        "macd_slow_period": 26,
+        "macd_signal_period": 9,
+        "bollinger_period": 20,
+        "bollinger_std_dev": 2.0
+      }
+      // ...其他策略配置
+    },
+    "safety_score_weights": { // 安全分权重
+      "pe_percentile": 0.4,
+      "pb_percentile": 0.4,
+      "dividend_yield_percentile": 0.2
+    },
+    "notifications": { // 预留给未来通知功能
+      "enabled": false,
+      "channels": []
+    }
+  }
+  ```
+- **`stock_pool.json` 结构:**
+  ```json
+  {
+    "default_pool": [
+      "SH600036", // 招商银行
+      "SZ000001"  // 平安银行
+    ],
+    "my_watchlist": [
+      "SH600519", // 贵州茅台
+      "SZ000858"  // 五粮液
+    ]
+    // 可以定义更多股票池
+  }
+  ```
+
+## 4. 核心模块与接口约定
+
+### 4.1 数据模块 (`data_manager.py` 或类似)
+- **主要职责:** 使用 `akshare` 获取、存储、更新股票数据；进行数据清洗、复权计算；合成周/月K线；计算动态股息率等衍生指标。
+- **关键函数 (示例，需根据akshare API适配):**
+  - `initialize_database()`: 初始化数据库表结构。
+  - `get_stock_daily_kline(stock_code: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame`: 获取日K线。`adjust` 可为 `qfq` (前复权), `hfq` (后复权), `""` (不复权)。
+  - `get_stock_financial_summary(stock_code: str) -> pd.DataFrame`: 获取财务摘要。
+  - `get_stock_dividend_data(stock_code: str) -> pd.DataFrame`: 获取分红数据。
+  - `update_single_stock_data(stock_code: str, data_types: list = ['kline', 'financial', 'dividend'])`: 更新单只股票的指定类型数据。
+  - `batch_update_stock_data(stock_codes: list, data_types: list = ['kline', 'financial', 'dividend'])`: 批量更新。
+  - `calculate_and_store_derived_kline(stock_code: str, period: str = 'weekly')`: 计算并存储周/月K线。
+  - `calculate_dynamic_dividend_yield(stock_code: str, current_price: float, date_for_dividend_history: str) -> float`: 计算动态股息率。
+  - `get_data_from_db(query: str, params: tuple = None) -> pd.DataFrame or list`: 通用数据库查询接口。
+  - `record_data_update_log(table_name: str, stock_code: str, last_fetch_date: str)`: 记录更新日志。
+
+### 4.2 策略引擎 (`strategy_engine.py` 或 `strategies/` 目录)
+- **主要职责:** 实现各种选股策略逻辑。每个策略是一个独立的函数或类。
+- **策略函数签名 (示例):**
+  - `apply_strategy_1a(daily_k_data: pd.DataFrame, weekly_k_data: pd.DataFrame, financial_data: dict, dividend_data: dict, strategy_params: dict) -> tuple[bool, str]`: 返回 (是否触发, 描述信息)。
+- **策略参数来源:** 从 `config.json` 中的 `strategies` 部分动态加载。
+
+### 4.3 命令行接口 (`main.py` 或 `cli.py` 使用 `argparse`)
+- **`init-config`**: 生成默认的 `config.json` 和 `stock_pool.json` 文件。
+- **`update-data [--stock <stock_code_or_pool_name>] [--all-pools] [--type <kline|financial|dividend|all>] [--start-date YYYY-MM-DD]`**: 更新数据。
+    - `--stock`: 指定单个股票代码或 `stock_pool.json` 中的池名。
+    - `--all-pools`: 更新所有在 `stock_pool.json` 中定义的股票。
+    - `--type`: 指定更新数据类型，默认为 `all`。
+    - `--start-date`: 指定历史数据更新的起始日期，默认为增量更新。
+- **`scan [--pool <pool_name>] [--date <YYYY-MM-DD>] [--strategy <strategy_name>]`**: 执行选股扫描。
+    - `--pool`: 指定要扫描的股票池名称，默认为 `default_pool`。
+    - `--date`: 指定扫描日期，默认为最新数据日期。
+    - `--strategy`: 指定运行特定策略，默认运行所有 `enabled: true` 的策略。
+    - 输出: 结果打印到控制台，并保存到 `scan_results/YYYY-MM-DD_scan_summary.json`。
+- **`backfill --stock <stock_code> --start-date <YYYY-MM-DD> --end-date <YYYY-MM-DD> [--strategy <strategy_name>]`**: 对历史数据执行策略回溯。
+    - 结果存入 `historical_signals` 表。
+- **`pool list`**: 列出所有股票池及其内容。
+- **`pool add --name <pool_name> --stock <stock_code1> [<stock_code2> ...]`**: 添加股票到指定池。
+- **`pool remove --name <pool_name> --stock <stock_code1> [<stock_code2> ...]`**: 从指定池移除股票。
+- **`pool create --name <new_pool_name>`**: 创建新的空股票池。
+- **`pool delete --name <pool_name>`**: 删除股票池。
+
+## 5. 核心逻辑与算法
+
+### 5.1 复权计算
+- **方法:** 优先使用 `akshare` 提供的接口直接获取前复权 (`qfq`) 或后复权 (`hfq`) 数据。如果自行计算，需获取复权因子。
+
+### 5.2 动态股息率计算
+- **方法:** (近12个月每股分红总额 / 当前股价) * 100% 或 (最新年报每股分红 / 当前股价) * 100%。需明确计算口径。数据源为 `dividend_data`。
+
+### 5.3 策略逻辑 (简述)
+- **Strategy 1A (日线低吸 - 布林下轨走平 + 股息率):**
+  1. 当前价接近或略低于布林带下轨。
+  2. 布林带下轨在过去 `bollinger_flat_check_days` 天内走平 (例如，波动幅度小于 `bollinger_flat_threshold_percentage`%)。
+  3. 动态股息率 > `min_dynamic_dividend_yield`%。
+  4. (可选辅助) 安全分达到一定阈值。
+- **Strategy 1B (周线低吸):** 逻辑类似1A，但基于周K线数据和对应参数。
+- **Strategy 2A (日线趋势突破 - MACD金叉 + 布林向上开口):**
+  1. MACD指标发生金叉 (DIF上穿DEA)。
+  2. 布林带通道向上开口 (上轨和下轨同时向上)。
+- **安全分 (Safety Score - 辅助):**
+  1. 获取个股当前的 PE(TTM), PB(MRQ), 动态股息率。
+  2. 计算这些指标在个股自身历史数据中的百分位 (越高越好，PE/PB是越低越好，需要转换)。
+  3. 根据 `safety_score_weights` 中的权重加权平均得到安全分。
+
+## 6. 错误处理与日志
+- **日志:** 使用 Python 内置 `logging` 模块。
+  - 日志级别通过 `config.json` (`log_level`) 控制。
+  - 输出到控制台和日志文件 (`log_file_path`)。
+  - 日志格式应包含时间戳、级别、模块名、消息。
+- **错误处理:**
+  - 对 `akshare` API 调用进行重试和异常捕获 (网络错误、数据解析错误)。
+  - 数据库操作使用 try-except，确保事务完整性。
+  - 文件IO操作进行异常处理。
+  - 关键计算步骤加入校验和异常捕获。
+  - 在CLI层面提供用户友好的错误提示。
+
+## 7. 测试要求
+- **框架:** 推荐使用 `unittest` 或 `pytest`。
+- **单元测试:** 覆盖核心函数，特别是：
+  - 数据获取与解析 (模拟 `akshare` 返回)。
+  - 数据清洗与转换。
+  - 指标计算 (布林带, MACD, 股息率, 安全分)。
+  - 单个策略逻辑的判断。
+  - 数据库操作的正确性。
+- **集成测试:** 测试模块间的交互，例如数据获取 -> 存储 -> 策略应用。
+- **端到端测试 (可选):** 模拟CLI命令的完整执行流程。
+
+## 8. 其他注意事项
+- **模块化设计:** 将不同功能拆分到独立的Python文件/模块中 (e.g., `data_manager.py`, `db_handler.py`, `utils.py`, `strategies/base_strategy.py`, `strategies/strategy_one.py`)。
+- **避免硬编码:** 关键参数、路径、API密钥（如果需要）等应通过 `config.json` 配置或环境变量管理。
+- **注释与文档字符串:** 对复杂逻辑、函数接口、类定义添加清晰的注释和文档字符串 (docstrings)。
+- **输出格式:** `scan` 命令的JSON输出应结构清晰，包含股票代码、触发策略、信号日期、价格、关键指标等。
+- **原子操作:** 对于涉及文件写入或数据库更新的操作，尽量保证原子性或可回滚。
+
+## 9. 未来扩展方向 (供参考)
+- **卖出策略:** 增加基于止盈、止损、技术指标反转的卖点判断。
+- **回测报告增强:** 计算年化收益、最大回撤、夏普比率等详细回测性能指标。
+- **Web界面/API服务:** 使用Flask/FastAPI提供图形化界面或API接口。
+- **通知功能:** 当扫描到机会时，通过邮件、微信等方式发送通知。
+- **机器学习辅助:** 探索使用机器学习模型辅助策略判断或参数优化。
+- **更细致的数据管理:** 例如，考虑板块数据、指数数据、更详细的财务数据。
+- **参数优化模块:** 允许对策略参数进行回测优化。
+
+## 10. 已实现的接口说明
+
+### 10.1 数据库处理模块 (`src/data/db_handler.py`)
+
+#### DatabaseHandler 类
+```python
+class DatabaseHandler:
+    def __init__(self, config: Union[str, Dict[str, Any]]):
+        """
+        初始化数据库处理器
+        
+        Args:
+            config: 配置文件路径或配置字典
+        """
+        
+    def connect(self) -> None:
+        """连接到数据库"""
+        
+    def close(self) -> None:
+        """关闭数据库连接"""
+        
+    def initialize_tables(self) -> None:
+        """初始化数据库表结构"""
+        
+    def execute_query(self, query: str, params: tuple = None) -> Optional[pd.DataFrame]:
+        """
+        执行查询
+        
+        Args:
+            query: SQL查询语句
+            params: 查询参数
+            
+        Returns:
+            Optional[pd.DataFrame]: 查询结果
+        """
+        
+    def execute_update(self, query: str, params: tuple = None) -> None:
+        """
+        执行更新操作
+        
+        Args:
+            query: SQL更新语句
+            params: 更新参数
+        """
+        
+    def insert_dataframe(self, table_name: str, df: pd.DataFrame) -> None:
+        """
+        将DataFrame数据插入到指定表
+        
+        Args:
+            table_name: 表名
+            df: 要插入的数据
+        """
+```
+
+### 10.2 日志模块 (`src/utils/logger.py`)
+
+#### setup_logger 函数
+```python
+def setup_logger(
+    name: str,
+    level: str = "INFO",
+    log_file: Optional[str] = None
+) -> logging.Logger:
+    """
+    设置日志记录器
+    
+    Args:
+        name: 日志记录器名称
+        level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: 日志文件路径（可选）
+        
+    Returns:
+        logging.Logger: 配置好的日志记录器
+    """
+```
+
+### 10.3 数据管理模块 (`src/data/data_manager.py`)
+
+#### DataManager 类
+```python
+class DataManager:
+    def __init__(self, config_path: str):
+        """
+        初始化数据管理器
+        
+        Args:
+            config_path: 配置文件路径
+        """
+        
+    def initialize_database(self) -> None:
+        """初始化数据库表结构"""
+        
+    def get_stock_daily_kline(
+        self,
+        stock_code: str,
+        start_date: str,
+        end_date: str,
+        adjust: str = "qfq"
+    ) -> pd.DataFrame:
+        """
+        获取股票日K线数据
+        
+        Args:
+            stock_code: 股票代码
+            start_date: 开始日期
+            end_date: 结束日期
+            adjust: 复权类型 (qfq: 前复权, hfq: 后复权, "": 不复权)
+            
+        Returns:
+            pd.DataFrame: 日K线数据
+        """
+        
+    def get_stock_financial_summary(self, stock_code: str) -> pd.DataFrame:
+        """
+        获取股票财务摘要数据
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            pd.DataFrame: 财务摘要数据
+        """
+        
+    def get_stock_dividend_data(self, stock_code: str) -> pd.DataFrame:
+        """
+        获取股票分红数据
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            pd.DataFrame: 分红数据
+        """
+        
+    def update_single_stock_data(
+        self,
+        stock_code: str,
+        data_types: list = ['kline', 'financial', 'dividend']
+    ) -> None:
+        """
+        更新单只股票数据
+        
+        Args:
+            stock_code: 股票代码
+            data_types: 要更新的数据类型列表
+        """
+        
+    def batch_update_stock_data(
+        self,
+        stock_codes: list,
+        data_types: list = ['kline', 'financial', 'dividend']
+    ) -> None:
+        """
+        批量更新股票数据
+        
+        Args:
+            stock_codes: 股票代码列表
+            data_types: 要更新的数据类型列表
+        """
+        
+    def calculate_and_store_derived_kline(
+        self,
+        stock_code: str,
+        period: str = 'weekly'
+    ) -> None:
+        """
+        计算并存储衍生K线数据
+        
+        Args:
+            stock_code: 股票代码
+            period: 周期类型 ('weekly' 或 'monthly')
+        """
+        
+    def calculate_dynamic_dividend_yield(
+        self,
+        stock_code: str,
+        current_price: float,
+        date_for_dividend_history: str
+    ) -> float:
+        """
+        计算动态股息率
+        
+        Args:
+            stock_code: 股票代码
+            current_price: 当前价格
+            date_for_dividend_history: 用于计算股息率的历史日期
+            
+        Returns:
+            float: 动态股息率
+        """
+        
+    def record_data_update_log(
+        self,
+        table_name: str,
+        stock_code: str,
+        last_fetch_date: str
+    ) -> None:
+        """
+        记录数据更新日志
+        
+        Args:
+            table_name: 表名
+            stock_code: 股票代码
+            last_fetch_date: 最后获取数据的日期
+        """
+```
+
+### 10.4 使用示例
+
+#### 初始化数据库
+```python
+from src.data.db_handler import DatabaseHandler
+from src.utils.logger import setup_logger
+
+# 设置日志
+logger = setup_logger("data_manager", "INFO", "app.log")
+
+# 初始化数据库
+db = DatabaseHandler("config.json")
+db.initialize_tables()
+```
+
+#### 获取股票数据
+```python
+from src.data.data_manager import DataManager
+
+# 初始化数据管理器
+dm = DataManager("config.json")
+
+# 获取日K线数据
+daily_kline = dm.get_stock_daily_kline(
+    "SH600036",
+    "2023-01-01",
+    "2023-12-31",
+    "qfq"
+)
+
+# 获取财务数据
+financial_data = dm.get_stock_financial_summary("SH600036")
+
+# 获取分红数据
+dividend_data = dm.get_stock_dividend_data("SH600036")
+```
+
+#### 更新数据
+```python
+# 更新单只股票数据
+dm.update_single_stock_data("SH600036", ["kline", "financial"])
+
+# 批量更新数据
+stock_codes = ["SH600036", "SZ000001"]
+dm.batch_update_stock_data(stock_codes, ["kline", "financial", "dividend"])
+```
+
+#### 计算衍生数据
+```python
+# 计算周K线
+dm.calculate_and_store_derived_kline("SH600036", "weekly")
+
+# 计算动态股息率
+dividend_yield = dm.calculate_dynamic_dividend_yield(
+    "SH600036",
+    35.5,  # 当前价格
+    "2023-12-31"  # 计算日期
+)
+```
